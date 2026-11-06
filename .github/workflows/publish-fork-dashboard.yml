@@ -1,0 +1,76 @@
+# Fork-only. This file stays on fork/dashboard-nuget and is not part of the upstream pull request.
+# It publishes a prerelease of the dashboard, and of the Quartz packages that prerelease has to restore
+# with, to GitHub Packages for dzmitrymatus. The package ids stay the official ones; the feed is this
+# account, not nuget.org.
+#
+# The dashboard on this branch calls SchedulerAccess, which v4.7.2 does not contain, so Quartz,
+# Quartz.AspNetCore and Quartz.HttpClient are published at the same version. A second publish needs a
+# new suffix: GitHub Packages keeps a version once it is pushed.
+name: publish-fork-dashboard
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_suffix:
+        description: Prerelease label. Packages are published as 4.8.0-<label>.
+        required: true
+        default: timeline.1
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-fork-dashboard
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: pack and push
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 'Setup: .NET SDK'
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Pack
+        env:
+          VERSION_SUFFIX: ${{ inputs.version_suffix }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION_SUFFIX" =~ ^[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$ ]]; then
+            echo "version_suffix must be a NuGet prerelease label such as timeline.1" >&2
+            exit 1
+          fi
+          mkdir -p artifacts/packages
+          projects=(
+            src/Quartz/Quartz.csproj
+            src/Quartz.AspNetCore/Quartz.AspNetCore.csproj
+            src/Quartz.HttpClient/Quartz.HttpClient.csproj
+            src/Quartz.Dashboard/Quartz.Dashboard.csproj
+          )
+          for project in "${projects[@]}"; do
+            dotnet pack "$project" \
+              --configuration Release \
+              --output artifacts/packages \
+              -p:VersionPrefix=4.8.0 \
+              -p:VersionSuffix="$VERSION_SUFFIX" \
+              -p:IncludeSymbols=false \
+              -p:ContinuousIntegrationBuild=true \
+              -p:RepositoryUrl=https://github.com/dzmitrymatus/quartznet
+          done
+
+      - name: Push to GitHub Packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dotnet nuget push "artifacts/packages/*.nupkg" \
+            --api-key "$GITHUB_TOKEN" \
+            --source "https://nuget.pkg.github.com/dzmitrymatus/index.json" \
+            --skip-duplicate
